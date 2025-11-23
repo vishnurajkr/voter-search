@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Voter Search — Exact Card View</title>
+<style>
+:root{--bg:#071329;--muted:#94a3b8;--accent:#2563eb;--glass: rgba(255,255,255,0.02)}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,'Noto Sans',Arial;background:linear-gradient(180deg,#071329 0%, #071822 100%);color:#e6eef8}
+.container{padding:14px;max-width:980px;margin:0 auto}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:12px}
+.title{font-weight:700;font-size:18px}
+.controls{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.controls input[type="search"],.controls input[type="file"]{flex:1 1 100%;padding:10px;border-radius:8px;background:var(--glass);border:1px solid rgba(255,255,255,0.03);color:var(--muted)}
+.btn{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--accent);padding:8px 12px;border-radius:8px}
+.btn.primary{background:var(--accent);color:white;border:none}
+.status{margin:8px 0;color:var(--muted)}
+.results{display:grid;grid-template-columns:1fr;gap:12px;margin-top:8px}
+.card{background:rgba(255,255,255,0.03);padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.02)}
+.card-header{font-weight:700;margin-bottom:8px}
+.card-image{max-width:100%;border-radius:6px;border:1px solid rgba(255,255,255,0.04);display:block;margin-bottom:8px}
+.empty{color:var(--muted);padding:14px;text-align:center}
+.footer{padding:12px;text-align:center;color:var(--muted);font-size:13px}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.9.179/pdf.min.js"></script>
+</head>
+<body>
+<div class="topbar container">
+  <div class="title">Voter Search — Exact Card View</div>
+</div>
+
+<main class="container">
+  <div class="controls">
+    <input id="fileInput" type="file" accept="application/pdf" />
+    <button id="loadSample" class="btn">Load Sample PDF</button>
+    <input id="query" type="search" placeholder="Search name or SEC/EPIC" />
+    <button id="searchBtn" class="btn primary">Search</button>
+  </div>
+
+  <div id="status" class="status">No PDF loaded.</div>
+  <div id="results" class="results"></div>
+</main>
+
+<div class="footer container">Select PDF → Search · result shows only matching card image</div>
+
+<script>
+const SAMPLE_PDF_PATH = "/mnt/data/Ward-43 (1).pdf";
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.9.179/pdf.worker.min.js';
+
+let pdfDoc = null;
+let cardIndex = [];
+const fileInput = document.getElementById('fileInput');
+const loadSample = document.getElementById('loadSample');
+const queryInput = document.getElementById('query');
+const searchBtn = document.getElementById('searchBtn');
+const status = document.getElementById('status');
+const results = document.getElementById('results');
+
+function showStatus(s){ status.textContent = s; }
+function clearResults(){ results.innerHTML = ''; }
+
+async function indexPdfArrayBuffer(arrayBuffer){
+  cardIndex = [];
+  try { pdfDoc = await pdfjsLib.getDocument({data: arrayBuffer}).promise; }
+  catch(e){ showStatus('Failed to open PDF: ' + e.message); console.error(e); return; }
+
+  const numPages = pdfDoc.numPages;
+  showStatus('Document loaded: ' + numPages + ' pages — parsing cards...');
+
+  const columnsCount = 2;
+  const rowsPerColumn = 6;
+
+  for(let p=1; p<=numPages; p++){
+    const page = await pdfDoc.getPage(p);
+    const viewport = page.getViewport({scale:1.0});
+    const txt = await page.getTextContent();
+    const items = (txt.items||[]).map(it=>{
+      const tr = it.transform||[1,0,0,1,0,0];
+      return {str:(it.str||""), x:tr[4]||0, y:tr[5]||0, width:it.width||0, height:it.height||0};
+    });
+    if(!items.length) continue;
+
+    const pageWidth = viewport.width;
+    const pageHeight = viewport.height;
+    const midX = pageWidth/2;
+    const ys = items.map(i=>i.y);
+    if(!ys.length) continue;
+    const maxY = Math.max(...ys);
+    const minY = Math.min(...ys);
+    const top = Math.max(0,minY-20);
+    const bottom = Math.min(pageHeight,maxY+20);
+    const bandHeight = (bottom-top)/rowsPerColumn;
+
+    const rects = [];
+    for(let col=0; col<columnsCount; col++){
+      const left = (col===0)?0:midX;
+      const width = midX;
+      for(let row=0; row<rowsPerColumn; row++){
+        const y = top + row*bandHeight;
+        rects.push({col,row,x:left,y,width,height:bandHeight});
+      }
+    }
+
+    for(const r of rects){
+      const contained = items.filter(it=>{
+        const cx = it.x + (it.width||0)/2;
+        const cy = it.y;
+        return cx>=r.x && cx<=(r.x+r.width) && cy>=r.y && cy<=(r.y+r.height);
+      });
+      if(!contained.length) continue;
+
+      const blockText = contained.map(i=>i.str).join(' ');
+
+      const renderScale = 1.5;
+      const renderViewport = page.getViewport({scale:renderScale});
+      if(!page._renderCanvas){
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(renderViewport.width);
+        canvas.height = Math.round(renderViewport.height);
+        const ctx = canvas.getContext('2d');
+        await page.render({canvasContext:ctx,viewport:renderViewport}).promise;
+        page._renderCanvas = canvas;
+      }
+
+      const scaleX = renderViewport.width/pageWidth;
+      const scaleY = renderViewport.height/pageHeight;
+      const cropX = Math.round(r.x*scaleX);
+      const cropY = Math.round((pageHeight-(r.y+r.height))*scaleY);
+      const cropW = Math.round(r.width*scaleX);
+      const cropH = Math.round(r.height*scaleY);
+
+      const canvas = page._renderCanvas;
+      const sx = Math.max(0, Math.min(canvas.width-1, cropX));
+      const sy = Math.max(0, Math.min(canvas.height-1, cropY));
+      const sw = Math.max(1, Math.min(canvas.width-sx, cropW));
+      const sh = Math.max(1, Math.min(canvas.height-sy, cropH));
+
+      const cropCanvas = document.createElement('canvas');
+      cropCanvas.width = sw;
+      cropCanvas.height = sh;
+      const cropCtx = cropCanvas.getContext('2d');
+      cropCtx.drawImage(canvas,sx,sy,sw,sh,0,0,sw,sh);
+      const dataUrl = cropCanvas.toDataURL('image/png');
+
+      cardIndex.push({page:p,col:r.col,row:r.row,text:blockText,image:dataUrl});
+    }
+  }
+  showStatus('Indexing complete — ' + cardIndex.length + ' cards indexed.');
+}
+
+function runSearch(query){
+  clearResults();
+  if(!pdfDoc){ showStatus('No PDF loaded'); return; }
+  if(!query || !query.trim()){ showStatus('Enter a search term'); return; }
+
+  const qLower = query.toLowerCase();
+  const matches = cardIndex.filter(c => c.text.toLowerCase().includes(qLower));
+  showStatus('Found ' + matches.length + ' matches');
+  if(!matches.length){ results.innerHTML='<div class="empty">No matches found</div>'; return; }
+
+  for(const m of matches){
+    const cardDiv = document.createElement('div'); cardDiv.className='card';
+    const header = document.createElement('div'); header.className='card-header';
+    header.textContent='Page '+m.page+' • Column '+(m.col+1)+' • Row '+(m.row+1);
+    const img = document.createElement('img'); img.className='card-image'; img.src=m.image;
+    cardDiv.appendChild(header);
+    cardDiv.appendChild(img);
+    results.appendChild(cardDiv);
+  }
+}
+
+fileInput.addEventListener('change', async e=>{
+  const f = e.target.files[0]; if(!f) return;
+  showStatus('Loading PDF...');
+  const ab = await f.arrayBuffer();
+  await indexPdfArrayBuffer(ab);
+});
+
+loadSample.addEventListener('click', async ()=>{
+  const resp = await fetch(SAMPLE_PDF_PATH);
+  const ab = await resp.arrayBuffer();
+  await indexPdfArrayBuffer(ab);
+});
+
+searchBtn.addEventListener('click', ()=>runSearch(queryInput.value.trim()));
+queryInput.addEventListener('keypress', e=>{ if(e.key==='Enter') runSearch(queryInput.value.trim()); });
+</script>
+</body>
+</html>
