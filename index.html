@@ -45,7 +45,7 @@ body{margin:0;font-family:system-ui,-apple-system,'Segoe UI',Roboto,'Noto Sans',
 <div class="footer container">Select PDF → Search · result shows only matching card image</div>
 
 <script>
-const SAMPLE_PDF_PATH = "/mnt/data/Ward-43 (1).pdf";
+const SAMPLE_PDF_PATH = "https://vishnurajkr.github.io/voter-search/assets/Ward-43.pdf";
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.9.179/pdf.worker.min.js';
 
 let pdfDoc = null;
@@ -177,11 +177,19 @@ fileInput.addEventListener('change', async e=>{
   await indexPdfArrayBuffer(ab);
 });
 
-loadSample.addEventListener('click', async ()=>{
-  const resp = await fetch(SAMPLE_PDF_PATH);
-  const ab = await resp.arrayBuffer();
-  await indexPdfArrayBuffer(ab);
+loadSample.addEventListener('click', async () => {
+  showStatus('Loading sample PDF...');
+  try {
+    const resp = await fetch(SAMPLE_PDF_PATH);
+    if (!resp.ok) throw new Error('Network response was not ok: ' + resp.status);
+    const ab = await resp.arrayBuffer();
+    await indexPdfArrayBuffer(ab);
+  } catch (err) {
+    console.error(err);
+    showStatus('Failed to load sample PDF. Make sure path is correct.');
+  }
 });
+
 
 searchBtn.addEventListener('click', ()=>runSearch(queryInput.value.trim()));
 queryInput.addEventListener('keypress', e=>{ if(e.key==='Enter') runSearch(queryInput.value.trim()); });
